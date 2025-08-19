@@ -59,10 +59,20 @@ export interface FhirPatient {
   }>;
 }
 
-export const searchPatients = async (searchTerm: string = '', count: number = 20): Promise<FhirPatient[]> => {
+export interface SearchPatientsResponse {
+  patients: FhirPatient[];
+  total: number;
+}
+
+export const searchPatients = async (
+  searchTerm: string = '', 
+  page: number = 1, 
+  pageSize: number = 10
+): Promise<SearchPatientsResponse> => {
   try {
     const params = new URLSearchParams({
-      _count: count.toString(),
+      _count: pageSize.toString(),
+      _getpagesoffset: ((page - 1) * pageSize).toString(),
       _format: 'json',
       _pretty: 'true'
     });
@@ -72,11 +82,14 @@ export const searchPatients = async (searchTerm: string = '', count: number = 20
     }
 
     const response = await api.get(`/Patient?${params.toString()}`);
-    return response.data.entry?.map((entry: any) => entry.resource) || [];
+    
+    return {
+      patients: response.data.entry?.map((entry: any) => entry.resource) || [],
+      total: response.data.total || 0
+    };
   } catch (error) {
     console.error('Error fetching patients from FHIR server:', error);
-    // Return empty array instead of throwing to prevent UI from breaking
-    return [];
+    return { patients: [], total: 0 };
   }
 };
 
@@ -108,9 +121,11 @@ const mapFhirToPatient = (fhirPatient: any) => {
 // Add this function to handle setting the auth token
 export const setAuthToken = (token: string | null): void => {
   if (token) {
+    localStorage.setItem('token', token);
     api.defaults.headers.common['Authorization'] = `Bearer ${token}`;
   } else {
     delete api.defaults.headers.common['Authorization'];
+    localStorage.removeItem('token');
   }
 };
 

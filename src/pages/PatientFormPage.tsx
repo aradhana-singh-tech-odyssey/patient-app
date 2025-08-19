@@ -1,3 +1,5 @@
+
+import { useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -45,19 +47,42 @@ const PatientFormPage = () => {
     },
   });
 
-  // Fetch patient data if in edit mode
-  const { isLoading: isLoadingPatient } = useQuery({
+  const {data: patientData,  isLoading: isLoadingPatient } = useQuery({
     queryKey: ['patient', id],
-    queryFn: () => getPatientById(id!), 
-    enabled: isEditMode,
-    onSuccess: (data) => {
-      if (data) {
-        const { id, createdAt, updatedAt, ...formData } = data;
-        reset(formData);
-      }
-    },
+  queryFn: () => getPatientById(id!),
+  enabled: isEditMode,
+    // onSuccess: (data: Patient | null) => {
+    //   if (data) {
+    //     const formData = {
+    //       firstName: data.firstName || '',
+    //       lastName: data.lastName || '',
+    //       dateOfBirth: data.dateOfBirth || '',
+    //       gender: data.gender || 'male',
+    //       email: data.email || '',
+    //       phoneNumber: data.phoneNumber || '',
+    //       address: data.address || '',
+    //       medicalHistory: data.medicalHistory || '',
+    //     };
+    //     reset(formData);
+    //   }
+    // },
   });
 
+  useEffect(() => {
+    if (patientData) {
+      const formData = {
+        firstName: patientData.firstName || '',
+        lastName: patientData.lastName || '',
+        dateOfBirth: patientData.dateOfBirth || '',
+        gender: patientData.gender || 'male',
+        email: patientData.email || '',
+        phoneNumber: patientData.phoneNumber || '',
+        address: patientData.address || '',
+        medicalHistory: patientData.medicalHistory || '',
+      };
+      reset(formData);
+    }
+  }, [patientData, reset]);
   const createMutation = useMutation({
     mutationFn: createPatient,
     onSuccess: () => {
@@ -92,6 +117,8 @@ const PatientFormPage = () => {
   };
 
   const isLoading = isLoadingPatient || createMutation.isPending || updateMutation.isPending;
+
+ 
 
   if (isLoadingPatient) {
     return (

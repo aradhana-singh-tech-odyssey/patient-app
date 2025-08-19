@@ -5,29 +5,126 @@ import { MagnifyingGlassIcon, PlusIcon, PencilIcon } from '@heroicons/react/24/o
 import { getPatients, Patient, subscribeToUpdates } from '@/services/patientService';
 import { Spinner } from '@/components/common/Spinner';
 
+const ITEMS_PER_PAGE = 10; // Number of items per page
+
 const PatientsPage = () => {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [searchTerm, setSearchTerm] = useState('');
-  
-  const { data: patients = [], isLoading, isError, error } = useQuery<Patient[], Error>({
-    queryKey: ['patients', searchTerm],
-    queryFn: () => getPatients(searchTerm ? { name: searchTerm } : undefined),
-    initialData: [],
-    // Don't refetch on window focus to prevent UI flicker
-    refetchOnWindowFocus: false
+  const [currentPage, setCurrentPage] = useState(1);
+
+  const { 
+    data: patientsData, 
+    isLoading, 
+    isError, 
+    error,
+    refetch 
+  } = useQuery<{ patients: Patient[]; total: number }>({
+    queryKey: ['patients', searchTerm, currentPage],
+    queryFn: () => getPatients({ name: searchTerm, page: currentPage, limit: ITEMS_PER_PAGE }),
+    keepPreviousData: true,
   });
+
+  // Refresh data when component mounts or when search term changes
+  useEffect(() => {
+    refetch();
+  }, [searchTerm, refetch]);
+
+  const totalPages = patientsData?.total ? Math.ceil(patientsData.total / ITEMS_PER_PAGE) : 1;
+  const patients = patientsData?.patients || [];
+
+  // Subscribe to real-time updates
+  useEffect(() => {
+    const interval = setInterval(() => {
+      queryClient.invalidateQueries({ queryKey: ['patients'] });
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [queryClient]);
 
   // Subscribe to real-time updates
   useEffect(() => {
     const unsubscribe = subscribeToUpdates(() => {
-      // Invalidate and refetch patients when updates occur
       queryClient.invalidateQueries({ queryKey: ['patients'] });
     });
-    
-    // Cleanup subscription on unmount
     return () => unsubscribe();
   }, [queryClient]);
+
+  const Pagination = () => {
+    const maxPageButtons = 10;
+    let startPage = Math.max(1, currentPage - Math.floor(maxPageButtons / 2));
+    
+    // Ensure we show exactly maxPageButtons pages, or less if there aren't enough pages
+    let endPage = startPage + maxPageButtons - 1;
+    
+    // Adjust if we're near the end
+    if (endPage > totalPages) {
+      endPage = totalPages;
+      startPage = Math.max(1, endPage - maxPageButtons + 1);
+    }
+    
+    // Ensure we show exactly maxPageButtons pages if there are enough pages
+    if (totalPages > maxPageButtons && endPage - startPage + 1 < maxPageButtons) {
+      startPage = Math.max(1, endPage - maxPageButtons + 1);
+    }
+    
+    const pageNumbers = [];
+    for (let i = startPage; i <= endPage; i++) {
+      pageNumbers.push(i);
+    }
+
+    return (
+      <div className="flex flex-col items-center mt-4">
+        <div className="flex items-center space-x-1">
+          <button
+            onClick={() => setCurrentPage(1)}
+            disabled={currentPage === 1}
+            className="px-3 py-1 border rounded disabled:opacity-50"
+          >
+            «
+          </button>
+          <button
+            onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+            disabled={currentPage === 1}
+            className="px-3 py-1 border rounded disabled:opacity-50"
+          >
+            ‹
+          </button>
+          
+          {pageNumbers.map((pageNum) => (
+            <button
+              key={pageNum}
+              onClick={() => setCurrentPage(pageNum)}
+              className={`px-3 py-1 border rounded ${
+                currentPage === pageNum 
+                  ? 'bg-indigo-600 text-white' 
+                  : 'hover:bg-gray-100'
+              }`}
+            >
+              {pageNum}
+            </button>
+          ))}
+          
+          <button
+            onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+            disabled={currentPage >= totalPages}
+            className="px-3 py-1 border rounded disabled:opacity-50"
+          >
+            ›
+          </button>
+          <button
+            onClick={() => setCurrentPage(totalPages)}
+            disabled={currentPage >= totalPages}
+            className="px-3 py-1 border rounded disabled:opacity-50"
+          >
+            »
+          </button>
+        </div>
+        <div className="mt-2 text-sm text-gray-600">
+          Page {currentPage} of {totalPages} • {patientsData?.total || 0} total patients
+        </div>
+      </div>
+    );
+  };
 
   const handleAddPatient = () => {
     navigate('/patients/new');
@@ -37,9 +134,9 @@ const PatientsPage = () => {
     navigate(`/patients/${id}/edit`);
   };
 
-  // Debounce search to avoid too many requests
   const handleSearch = (e: React.ChangeEvent<HTMLInputElement>) => {
     setSearchTerm(e.target.value);
+    setCurrentPage(1); // Reset to first page on new search
   };
 
   if (isLoading && patients.length === 0) {
@@ -59,7 +156,7 @@ const PatientsPage = () => {
               Error loading patients
             </h3>
             <div className="mt-2 text-sm text-red-700">
-              <p>{error?.message || 'Failed to fetch patients'}</p>
+              <p>{error instanceof Error ? error.message : 'Failed to fetch patients'}</p>
             </div>
           </div>
         </div>
@@ -139,10 +236,10 @@ const PatientsPage = () => {
                         <div className="text-gray-500">{patient.phoneNumber}</div>
                       </td>
                       <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">
-                        {patient.gender.charAt(0).toUpperCase() + patient.gender.slice(1)}
+                        {patient.gender?.charAt(0).toUpperCase() + patient.gender?.slice(1) || 'N/A'}
                       </td>
                       <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">
-                        {new Date(patient.dateOfBirth).toLocaleDateString()}
+                        {patient.dateOfBirth ? new Date(patient.dateOfBirth).toLocaleDateString() : 'N/A'}
                       </td>
                       <td className="relative whitespace-nowrap py-4 pl-3 pr-4 text-right text-sm font-medium sm:pr-6">
                         <button
@@ -163,6 +260,7 @@ const PatientsPage = () => {
                 </div>
               )}
             </div>
+            <Pagination />
           </div>
         </div>
       </div>

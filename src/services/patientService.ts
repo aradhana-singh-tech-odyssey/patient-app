@@ -3,30 +3,83 @@ import { searchPatients, getPatientById as getFhirPatient, FhirPatient } from '.
 // In-memory storage for patients
 let inMemoryPatients: Patient[] = [];
 
+// Track if initial sync is done
+let isInitialSyncDone = false;
+let isSyncing = false;
+
 // Helper function to sync with FHIR server
-const syncWithFhir = async () => {
+const syncWithFhir = async (page: number = 1, limit: number = 50, isInitial: boolean = true) => {
+  // Prevent multiple concurrent syncs
+  if (isSyncing) return;
+  
+  // Only fetch first 10 pages
+  if (page > 10) {
+    if (isInitial) {
+      isInitialSyncDone = true;
+      notifyListeners();
+    }
+    return;
+  }
+
+  isSyncing = true;
+  
   try {
-    const fhirPatients = await searchPatients('');
-    inMemoryPatients = fhirPatients.map(patient => ({
-      id: patient.id || `local-${Date.now()}`,
-      firstName: patient.name?.[0]?.given?.[0] || '',
-      lastName: patient.name?.[0]?.family || '',
-      gender: (patient.gender as 'male' | 'female' | 'other') || 'other',
-      dateOfBirth: patient.birthDate || '',
-      email: patient.telecom?.find(t => t.system === 'email')?.value,
-      phoneNumber: patient.telecom?.find(t => t.system === 'phone')?.value || '',
-      address: patient.address?.[0]?.line?.join(', ')
-    }));
+    const { patients: fhirPatients } = await searchPatients('', page, limit);
+    
+    if (Array.isArray(fhirPatients) && fhirPatients.length > 0) {
+      const newPatients = fhirPatients.map(patient => ({
+        id: patient.id || `local-${Date.now()}`,
+        firstName: patient.name?.[0]?.given?.[0] || '',
+        lastName: patient.name?.[0]?.family || '',
+        gender: (patient.gender as 'male' | 'female' | 'other') || 'other',
+        dateOfBirth: patient.birthDate || '',
+        email: patient.telecom?.find(t => t.system === 'email')?.value,
+        phoneNumber: patient.telecom?.find(t => t.system === 'phone')?.value || '',
+        address: patient.address?.[0]?.line?.join(', '),
+        createdAt: patient.meta?.lastUpdated || new Date().toISOString()
+      }));
+
+      // Add new patients, avoiding duplicates
+      newPatients.forEach(patient => {
+        if (!inMemoryPatients.some(p => p.id === patient.id)) {
+          inMemoryPatients.push(patient);
+        }
+      });
+
+      // If we got a full page, fetch next page
+      if (fhirPatients.length === limit) {
+        await syncWithFhir(page + 1, limit, isInitial);
+      } else if (isInitial) {
+        isInitialSyncDone = true;
+      }
+    } else if (isInitial) {
+      isInitialSyncDone = true;
+    }
+    
+    // Notify listeners that we have new data
+    notifyListeners();
   } catch (error) {
     console.error('Error syncing with FHIR server:', error);
+    if (isInitial) {
+      isInitialSyncDone = true;
+      notifyListeners();
+    }
+  } finally {
+    isSyncing = false;
   }
 };
 
-// Initial sync
-syncWithFhir();
+// Initial sync - only do this once
+if (!isInitialSyncDone) {
+  syncWithFhir(1, 50, true);
+}
 
 // Sync every 30 seconds
-setInterval(syncWithFhir, 30000);
+setInterval(() => {
+  if (isInitialSyncDone) {
+    syncWithFhir(1, 50, false);
+  }
+}, 30000);
 
 // Event emitter for real-time updates
 const listeners: Array<() => void> = [];
@@ -55,22 +108,32 @@ export interface Patient {
   phoneNumber: string;
   address?: string;
   medicalHistory?: string;
+  createdAt?: string;
 }
 
 export interface PatientFilters {
   name?: string;
   gender?: string;
   birthDate?: string;
+  page?: number;
+  limit?: number;
+  createdAfter?: string;
 }
 
-export const getPatients = async (filters?: PatientFilters): Promise<Patient[]> => {
+export const getPatients = async (filters?: PatientFilters): Promise<{ patients: Patient[]; total: number }> => {
   try {
-    if (inMemoryPatients.length === 0) {
-      await syncWithFhir();
+    // If this is the first load and sync hasn't completed yet, trigger sync
+    if (!isInitialSyncDone && inMemoryPatients.length === 0) {
+      if (!isSyncing) {
+        syncWithFhir(1, 50, true).catch(console.error);
+      }
+      // Return empty result but with the current total if available
+      return { patients: [], total: inMemoryPatients.length };
     }
 
     let result = [...inMemoryPatients];
-
+    
+    // Apply filters
     if (filters) {
       if (filters.name) {
         const searchTerm = filters.name.toLowerCase();
@@ -78,22 +141,39 @@ export const getPatients = async (filters?: PatientFilters): Promise<Patient[]> 
           `${patient.firstName} ${patient.lastName}`.toLowerCase().includes(searchTerm)
         );
       }
+      
       if (filters.gender) {
-        result = result.filter(patient => 
-          patient.gender === filters.gender
-        );
+        result = result.filter(patient => patient.gender === filters.gender);
       }
+      
       if (filters.birthDate) {
-        result = result.filter(patient => 
-          patient.dateOfBirth === filters.birthDate
-        );
+        result = result.filter(patient => patient.dateOfBirth === filters.birthDate);
+      }
+      
+      if (filters.createdAfter) {
+        const createdAfterDate = new Date(filters.createdAfter);
+        result = result.filter(patient => {
+          if (!patient.createdAt) return true;
+          const patientDate = new Date(patient.createdAt);
+          return patientDate >= createdAfterDate;
+        });
       }
     }
-
-    return result;
+    
+    // Get total count before pagination
+    const total = result.length;
+    
+    // Apply pagination if needed
+    if (filters?.page && filters?.limit) {
+      const start = (filters.page - 1) * filters.limit;
+      const end = start + filters.limit;
+      result = result.slice(start, end);
+    }
+    
+    return { patients: result, total };
   } catch (error) {
-    console.error('Error fetching patients:', error);
-    throw new Error('Failed to fetch patients');
+    console.error('Error in getPatients:', error);
+    return { patients: [], total: 0 };
   }
 };
 
@@ -131,7 +211,8 @@ export const createPatient = async (patientData: Omit<Patient, 'id'>): Promise<P
   try {
     const newPatient: Patient = {
       ...patientData,
-      id: `local-${Date.now()}`
+      id: `local-${Date.now()}`,
+      createdAt: new Date().toISOString()
     };
 
     inMemoryPatients = [...inMemoryPatients, newPatient];
