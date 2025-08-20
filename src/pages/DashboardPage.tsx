@@ -2,8 +2,58 @@ import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { getPatients, subscribeToUpdates } from '@/services/patientService';
 import { Spinner } from '@/components/common/Spinner';
-import { useEffect } from 'react';
-import GraphData from '@/components/GraphData'; // Updated import to use default import
+import { useEffect, useState } from 'react';
+import GraphData from '@/components/GraphData';
+import VitalsDisplay from '@/components/VitalsDisplay';
+
+// Mock function to simulate fetching vitals data
+// In a real app, this would be an API call
+const fetchVitals = async (): Promise<Array<{
+  name: string;
+  value: number | string;
+  unit: string;
+  isAbnormal: boolean;
+  timestamp: string;
+}>> => {
+  // Simulate API call
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      const now = new Date();
+      const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
+      
+      resolve([
+        {
+          name: 'Heart Rate',
+          value: 88,
+          unit: 'bpm',
+          isAbnormal: false,
+          timestamp: now.toISOString(),
+        },
+        {
+          name: 'Blood Pressure',
+          value: '120/80',
+          unit: 'mmHg',
+          isAbnormal: false,
+          timestamp: now.toISOString(),
+        },
+        {
+          name: 'Temperature',
+          value: 38.5,
+          unit: '°C',
+          isAbnormal: true,
+          timestamp: now.toISOString(),
+        },
+        {
+          name: 'Oxygen',
+          value: 95,
+          unit: '%',
+          isAbnormal: true,
+          timestamp: oneHourAgo.toISOString(),
+        },
+      ]);
+    }, 500);
+  });
+};
 
 const DashboardPage = () => {
   // Get current date and date 7 days ago
@@ -11,6 +61,16 @@ const DashboardPage = () => {
   const oneWeekAgo = new Date(now);
   oneWeekAgo.setDate(now.getDate() - 7);
   
+  // State for vitals data
+  const [vitals, setVitals] = useState<Array<{
+    name: string;
+    value: number | string;
+    unit: string;
+    isAbnormal: boolean;
+    timestamp: string;
+  }>>([]);
+  const [isLoadingVitals, setIsLoadingVitals] = useState(true);
+
   // Query for total patients count (no pagination)
   const { 
     data: totalPatientsData, 
@@ -18,9 +78,9 @@ const DashboardPage = () => {
     refetch: refetchTotal 
   } = useQuery({
     queryKey: ['patients', 'total-count'],
-    queryFn: () => getPatients({}), // No pagination for total count
-    select: (data) => data.total,   // Only return the total count
-    staleTime: 5 * 60 * 1000, // 5 minutes
+    queryFn: () => getPatients({}),
+    select: (data) => data.total,
+    staleTime: 5 * 60 * 1000,
   });
 
   // Query for new patients this week
@@ -33,8 +93,8 @@ const DashboardPage = () => {
     queryFn: () => getPatients({ 
       createdAfter: oneWeekAgo.toISOString()
     }),
-    select: (data) => data.total, // Only return the count
-    staleTime: 5 * 60 * 1000, // 5 minutes
+    select: (data) => data.total,
+    staleTime: 5 * 60 * 1000,
   });
 
   // Query for all patients (for the graph)
@@ -45,15 +105,36 @@ const DashboardPage = () => {
     queryKey: ['patients', 'all'],
     queryFn: () => getPatients({}),
     select: (data) => data.patients,
-    staleTime: 5 * 60 * 1000, // 5 minutes
+    staleTime: 5 * 60 * 1000,
   });
+
+  // Fetch vitals data
+  useEffect(() => {
+    const loadVitals = async () => {
+      try {
+        setIsLoadingVitals(true);
+        const data = await fetchVitals();
+        setVitals(data);
+      } catch (error) {
+        console.error('Error loading vitals:', error);
+      } finally {
+        setIsLoadingVitals(false);
+      }
+    };
+
+    loadVitals();
+    
+    // Set up polling for vitals (every 5 minutes)
+    const intervalId = setInterval(loadVitals, 5 * 60 * 1000);
+    
+    return () => clearInterval(intervalId);
+  }, []);
 
   // Subscribe to patient updates
   useEffect(() => {
     const unsubscribe = subscribeToUpdates(() => {
       refetchTotal();
       refetchNew();
-      // Add refetch for all patients
       allPatientsData?.refetch();
     });
     return () => unsubscribe();
@@ -77,12 +158,12 @@ const DashboardPage = () => {
       loading: isLoadingNew
     },
     { 
-      name: 'Appointments Today', 
-      value: '2', 
-      change: '+1', 
-      changeType: 'positive',
-      link: '/appointments?filter=today',
-      loading: false
+      name: 'Critical Alerts', 
+      value: vitals.filter(v => v.isAbnormal).length, 
+      change: vitals.filter(v => v.isAbnormal).length > 0 ? 'New' : undefined, 
+      changeType: 'negative',
+      link: '/vitals?filter=abnormal',
+      loading: isLoadingVitals
     },
     { 
       name: 'Pending Tasks', 
@@ -127,6 +208,7 @@ const DashboardPage = () => {
         </div>
       </div>
 
+      {/* Stats Grid */}
       <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
         {stats.map((stat) => (
           <Link
@@ -142,20 +224,32 @@ const DashboardPage = () => {
                     <Spinner size="sm" className="mr-2" />
                     <span>--</span>
                   </div>
+                ) : stat.name === 'Critical Alerts' && stat.value > 0 ? (
+                  <span className="text-red-600">{stat.value}</span>
                 ) : (
                   stat.value
                 )}
               </dd>
-              <div className={`mt-2 flex items-baseline ${stat.changeType === 'positive' ? 'text-green-600' : 'text-red-600'} text-sm font-semibold`}>
-                {stat.change}
-                <span className="sr-only"> {stat.changeType === 'positive' ? 'Increased' : 'Decreased'} by</span>
-              </div>
+              {stat.change && (
+                <div className={`mt-2 flex items-baseline ${stat.changeType === 'positive' ? 'text-green-600' : 'text-red-600'} text-sm font-semibold`}>
+                  {stat.change}
+                  <span className="sr-only"> {stat.changeType === 'positive' ? 'Increased' : 'Decreased'} by</span>
+                </div>
+              )}
             </div>
           </Link>
         ))}
       </div>
 
-      {/* Add GraphData component */}
+      {/* Vitals Display */}
+      <div className="mt-6">
+        <VitalsDisplay 
+          vitals={vitals} 
+          isLoading={isLoadingVitals} 
+        />
+      </div>
+
+      {/* Patient Analytics */}
       <div className="mt-8">
         <h2 className="text-xl font-semibold text-gray-900 mb-6">Patient Analytics</h2>
         <GraphData 
